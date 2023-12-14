@@ -1,15 +1,9 @@
-use std::iter::zip;
-
 const SCREEN_WIDTH: usize = 64;
 const SCREEN_HEIGHT: usize = 32;
 const PIXEL_ON: u8 = 0x01;
 const PIXEL_OFF: u8 = 0x00;
 
 pub struct Screen {
-    // ON = 0x1
-    on: u8,
-    // OFF = 0x0
-    off: u8,
     screen: [[u8; SCREEN_WIDTH]; SCREEN_HEIGHT],
     collision: bool
 }
@@ -17,8 +11,6 @@ pub struct Screen {
 impl Screen {
     pub fn default() -> Self {
         Screen {
-            on: PIXEL_ON,
-            off: PIXEL_OFF,
             screen: [[PIXEL_OFF; SCREEN_WIDTH]; SCREEN_HEIGHT],
             collision: false
         }

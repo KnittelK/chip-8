@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /*
 Bindings:
@@ -36,38 +36,35 @@ const KEY_BINDINGS: [(u8, char); 16] = [
 
 pub struct Keypad {
     mapping: HashMap<u8, char>,
-    pressed_keys: HashSet<u8>,
-    // reverse_mapping: HashMap<char, u8>,
+    last_pressed_key: Option<u8>
 }
 
 impl Keypad {
     pub fn default() -> Self {
         let mut mapping = HashMap::new();
-        // let mut reverse_mapping = HashMap::new();
 
         for (hex_key, key_binding) in KEY_BINDINGS.iter() {
             mapping.insert(*hex_key, *key_binding);
-            // reverse_mapping.insert(*key_binding, *hex_key);
         }
         Keypad {
             mapping,
-            // reverse_mapping,
-            pressed_keys: HashSet::new()}
+            last_pressed_key: None
+        }
     }
 
     pub fn keypress(&mut self, key: u8) {
-        self.pressed_keys.insert(key);
+        self.last_pressed_key = Some(key);
     }
 
-    pub fn remove_keypress(&mut self, keypress: u8) -> bool{
-        self.pressed_keys.remove(&keypress)
+    pub fn was_key_pressed(&self, key: u8) -> bool {
+        self.last_pressed_key == Some(key)
     }
 
     pub fn any_key_pressed(&self) -> bool {
-        self.pressed_keys.len() > 0
+        self.last_pressed_key.is_some()
     }
 
-    pub fn zero_keypresses(&mut self) {
-        self.pressed_keys.clear();
+    pub fn take_keypress(&mut self) -> Option<u8> {
+        self.last_pressed_key.take()
     }
 }

@@ -29,8 +29,8 @@ static CHIP8_FONTSET: [u8; 80] = [
 
 pub struct Chip8 {
     memory: Memory,                 // 4KB of memory
-    pc: u16,                      // usize instead of u16 for easier indexing, program counter
-    i: u16,                       // usize instead of u16 for easier indexing, index register
+    pc: u16,                      // program counter
+    i: u16,                       // index register
     register: [u8; REGISTER],      // register of size 16
     stack: [u16; STACK],            // program stack
     sp: usize,                      // stack pointer
@@ -116,9 +116,7 @@ impl Chip8 {
         self.pc = self.stack[self.sp];
     }
 
-    pub fn run(&mut self) {
-        loop {
-            let opcode = self.read_opcode();
+    pub fn execute_instruction(&mut self, opcode: u16) {
             let opcode_group = ((opcode & 0xF000) >> 12) as u8;
             let x = ((opcode & 0x0F00) >> 8) as usize;
             let y = ((opcode & 0x00F0) >> 4) as usize;
@@ -139,12 +137,12 @@ impl Chip8 {
                 },
                 (0x1, _, _, _) => {
                     self.set_pc_to_addr(nnn);
-                    continue
+                    return
                 },
                 (0x2, _, _, _) => {
                     self.call_fn_at_addr(nnn);
                     // skip incrementing program counter.
-                    continue
+                    return
                 },
                 (0x3, _, _, _) => {
                     // Skip the next instruction if register VX is equal to NN
@@ -213,11 +211,13 @@ impl Chip8 {
                             // Set VX equal to VY minus VX. VF is set to 1 if VY > VX. Otherwise 0.
                             let vx = self.register[x];
                             let vy = self.register[y];
-                            self.register[x] = self.register[y] - self.register[x];
-                            if vy > vx {
-                                self.register[0xF] = 1
+                            if vx > vy {
+                                // + 1 due to 0 not being counted.
+                                self.register[x] = (vy as i16 - vx as i16 + 1).abs() as u8;
+                                self.register[0xF] = 0;
                             } else {
-                                self.register[0xF] = 0
+                                self.register[x] = (vy as i16 - vx as i16).abs() as u8;
+                                self.register[0xF] = 1;
                             }
                         }
                         0xE => {
@@ -242,7 +242,8 @@ impl Chip8 {
                 }
                 (0xB, _, _, _) => {
                     // Set the PC to NNN plus the value in V0.
-                    self.pc = nnn + self.register[0] as u16
+                    self.pc = nnn + self.register[0] as u16;
+                    return
                 }
                 (0xC, _, _, _) => {
                     // Set VX equal to a random number ranging from 0 to 255 which is logically anded with NN.
@@ -265,38 +266,6 @@ impl Chip8 {
 
                     for yline in 0..height {
                         let pixel = self.memory[self.i + (yline as u16)];
-
-                        // for xline in 0..8 {
-                        //     // this loop will scan through each bit in pixel_value and extract its content
-                        //     // which is then used to determine if a collision occurred and will flag it in the register
-                        //
-                        //
-                        //     // value of a pixel at a specific location.
-                        //     let pixel_value = pixel & (0x80 >> xline);
-                        //
-                        //     // TODO: for some reason, everyone checks if pixel_value != 0 and only then draws the pixel?
-                        //     if pixel_value != 0 {
-                        //         // check if collision occurred which occurs when a pixel changed
-                        //         // from 1 to 0 during a XOR operation.
-                        //         let collision = self.screen.did_collision_occur(
-                        //             x_coord,
-                        //             y_coord,
-                        //             pixel_value
-                        //         );
-                        //         match collision {
-                        //             true => self.register[0xF] = 0x1,
-                        //             false => ()
-                        //         }
-                        //
-                        //         // draw pixel value at location now
-                        //         self.screen.draw_pixel_at_location(
-                        //             x_coord,
-                        //             y_coord,
-                        //             pixel_value
-                        //         );
-                        //     }
-                        // }
-
                         let collision = self.screen.draw_sprite_at_location(pixel, x_coord, y_coord + yline);
                         match collision {
                             true => self.register[0xF] = 0x1,
@@ -307,7 +276,8 @@ impl Chip8 {
                 (0xE, _, 0x9, 0xE) => {
                     // Skips the next instruction if the key stored in VX is pressed
                     // (usually the next instruction is a jump to skip a code block).
-                    let key_at_x_pressed = self.keyboard.remove_keypress(x as u8);
+                    let key_pressed = self.keyboard.take_keypress();
+                    let key_at_x_pressed = key_pressed == Some(x as u8);
                     match key_at_x_pressed {
                         true => self.pc += 2,
                         false => ()
@@ -315,7 +285,7 @@ impl Chip8 {
                 }
                 (0xE, _, 0xA, 0x1) => {
                     // Skip the following instruction if the key represented by the value in VX is not pressed.
-                    let key_at_x_pressed = self.keyboard.remove_keypress(x as u8);
+                    let key_at_x_pressed = self.keyboard.was_key_pressed(x as u8);
                     match !key_at_x_pressed {
                         true => self.pc += 2,
                         false => ()
@@ -327,11 +297,10 @@ impl Chip8 {
                 }
                 (0xF, _, 0x0, 0xA) => {
                     // Wait for a key press and store the value of the key into VX.
-
-                    if !self.keyboard.any_key_pressed() {
-                        return;
+                    match self.keyboard.take_keypress() {
+                        Some(key) => self.register[x] = key,
+                        None => return
                     }
-                    self.keyboard.zero_keypresses();
                 }
                 (0xF, _, 0x1, 0x5) => {
                     // Set the delay timer DT to VX.
@@ -365,7 +334,7 @@ impl Chip8 {
                 (0xF, _, 0x5, 0x5) => {
                     // Store registers V0 through VX in memory starting at location I.
                     // I does not change.
-                    for idx in 0..x as u16 {
+                    for idx in 0..=x as u16 {
                         self.memory[self.i + idx] = self.register[idx as usize];
                     }
                 }
@@ -373,7 +342,7 @@ impl Chip8 {
                     // Copy values from memory location I through I + X into registers V0
                     // through VX. I does not change.
 
-                    for (starting_idx, idx) in (self.i..self.i+x as u16).enumerate() {
+                    for (starting_idx, idx) in (self.i..=self.i+x as u16).enumerate() {
                         // starting_idx starts at 0 for V0 and ends at x thanks to enumerate.
                         self.register[starting_idx] = self.memory[idx];
                     }
@@ -387,17 +356,35 @@ impl Chip8 {
             // Timers are updated every iteration at 60Hz.
 
             // Update timers
-            if(self.delay_timer > 0){
+            if self.delay_timer > 0 {
                 self.delay_timer-=1;
             }
 
-            if(self.sound_timer > 0)
-            {
-                if (self.sound_timer == 1) {
+            if self.sound_timer > 0 {
+                if self.sound_timer == 1 {
                     println!("BEEP!\n");
 
                 }
                 self.sound_timer-= 1;
+            }
+    }
+
+    fn execute_single_instruction(&mut self) {
+        let opcode = self.read_opcode();
+        if opcode != 0x0 {
+            self.execute_instruction(opcode)
+        } else {
+            return;
+        }
+    }
+
+    pub fn run(&mut self) {
+        loop {
+            let opcode = self.read_opcode();
+            if opcode != 0x0 {
+                self.execute_instruction(opcode)
+            } else {
+                return;
             }
         }
     }
@@ -420,14 +407,16 @@ impl Chip8 {
     }
 
     fn sub(&mut self, x: usize, y: usize) {
-        let arg1 = self.register[x];
-        let arg2 = self.register[y];
-        let (val, underflow) = arg1.overflowing_sub(arg2);
-        self.register[x] = val;
-        // CHIP-8 uses the last register as carry flag, indicating that an operation has overflowed.
-        if underflow {
+        let vx = self.register[x];
+        let vy = self.register[y];
+
+        if vy > vx {
+            // borrow occurs
+            let val = (vx as i16 - vy as i16 + 1).abs() as u8;
+            self.register[x] = val;
             self.register[0xF] = 0;
         } else {
+            self.register[x] = vx - vy;
             self.register[0xF] = 1;
         }
     }
@@ -529,18 +518,22 @@ mod tests {
     #[test]
     fn test_jump_to_address() {
         // 0x1NNN: jumps to address NNN
-        let program: Vec<u8> = vec![0x10, 0xDC];
+        let program: Vec<u8> = vec![
+            0x10, 0xDC
+        ];
 
         let mut chip8 = create_and_load(&program).unwrap();
 
         assert_eq!(chip8.memory[0xDC], 0);
-        chip8.memory[0xDC] = 1;
-        assert_eq!(chip8.memory[0xDC], 1);
+        chip8.memory[0xDC] = 0x0;
+        chip8.memory[0xDD] = 0x0;
+        assert_eq!(chip8.memory[0xDC], 0x0);
+        assert_eq!(chip8.memory[0xDD], 0x0);
 
         chip8.run();
 
         assert_eq!(chip8.pc, 0xDC);
-        assert_eq!(chip8.memory[chip8.pc], 1);
+        assert_eq!(chip8.memory[chip8.pc], 0x0);
     }
 
     #[test]
@@ -963,8 +956,6 @@ mod tests {
         let y_coord = (start_y % 64) as usize;
 
         let start_pixel = (y_coord * 64) + x_coord;
-        let end_pixel = start_pixel + (64 * height);
-
         let how_many_ones = chip8.screen.how_many_ones();
 
         assert_eq!(how_many_ones, 14);
@@ -996,21 +987,7 @@ mod tests {
         chip8.register[4] = start_x;
         chip8.register[6] = start_y;
 
-        // This will draw the `0`
-        chip8.run();
-
-        let x_coord = (start_x % 32) as usize;
-        let y_coord = (start_y % 64) as usize;
-
-        let start_pixel = (y_coord * 64) + x_coord;
-        let end_pixel = start_pixel + (64 * height);
-
-        let how_many_ones = chip8.screen.how_many_ones();
-
-        assert_eq!(how_many_ones, 14);
-        assert_eq!(chip8.register[0xF], 0);
-
-        // This will redraw the `0`, which should erase the previous one
+        // This will draw the `0` in the first step, and overwrite said zero at the second step.
         chip8.run();
 
         let x_coord = (start_x % 32) as usize;
@@ -1032,20 +1009,14 @@ mod tests {
         let program: Vec<u8> = vec![0xE4, 0x9E];
 
         let mut chip8 = create_and_load(&program).unwrap();
-        let keys_pressed = chip8.keyboard.any_key_pressed();
-
-        assert_eq!(keys_pressed, false);
 
         let orig_pc = chip8.pc;
 
         chip8.register[4] = key_index;
         chip8.keyboard.keypress(key_index);
 
-        chip8.run();
+        chip8.execute_single_instruction();
 
-        let keys_pressed = chip8.keyboard.any_key_pressed();
-
-        assert_eq!(keys_pressed, false);
         assert_eq!(chip8.pc, orig_pc + 4);
     }
 
@@ -1064,12 +1035,14 @@ mod tests {
 
         chip8.register[4] = key_index;
 
-        chip8.run();
-
         let keys_pressed = chip8.keyboard.any_key_pressed();
-
         assert_eq!(keys_pressed, false);
-        assert_eq!(chip8.pc, orig_pc + 2);
+
+        chip8.keyboard.keypress(key_index);
+
+        chip8.execute_single_instruction();
+
+        assert_eq!(chip8.pc, orig_pc + 4);
     }
 
     #[test]
@@ -1111,7 +1084,7 @@ mod tests {
         chip8.register[4] = key_index;
         chip8.keyboard.keypress(key_index);
 
-        chip8.run();
+        chip8.execute_single_instruction();
 
         let keys_pressed = chip8.keyboard.any_key_pressed();
 
@@ -1141,21 +1114,19 @@ mod tests {
         // 0xFX0A: A key press is awaited, and then stored in VX.
         // (Blocking Operation. All instruction halted until next key event)
         let key_index: u8 = 0x4;
-        let program: Vec<u8> = vec![0xF4, 0x0A];
+        let program: Vec<u8> = vec![
+            0xF4, 0x0A
+        ];
 
         let mut chip8 = create_and_load(&program).unwrap();
-        let keys_pressed = chip8.keyboard.any_key_pressed();
 
-        assert_eq!(keys_pressed, false);
         assert_eq!(chip8.register[4], 0);
         let orig_pc = chip8.pc;
 
-        // After this, everything should be just as it was, since no key has been pressed.
-        chip8.run();
+        // After this, everything should be just as it was,
+        // since no key has been pressed and program counter wasn't incremented
+        chip8.execute_single_instruction();
 
-        let keys_pressed = chip8.keyboard.any_key_pressed();
-
-        assert_eq!(keys_pressed, false);
         assert_eq!(chip8.pc, orig_pc);
 
         // Now set the key, and go again
@@ -1163,11 +1134,8 @@ mod tests {
 
         // After this time, the key index should be in `chip8.register[4]`,
         // the `chip8.key` array should be all `0`, and `self.pc` should have been advanced
-        chip8.run();
+        chip8.execute_single_instruction();
 
-        let keys_pressed = chip8.keyboard.any_key_pressed();
-
-        assert_eq!(keys_pressed, true);
         assert_eq!(chip8.register[4], key_index);
         assert_eq!(chip8.pc, orig_pc + 2);
     }
@@ -1283,11 +1251,14 @@ mod tests {
         // The offset from I is increased by 1 for each value written, but I itself
         // is left unmodified.
 
-        let program: Vec<u8> = vec![0xF4, 0x55];
+        let program: Vec<u8> = vec![
+            0xF4, 0x55,
+            0x0, 0x0 // exit
+        ];
 
         let mut chip8 = create_and_load(&program).unwrap();
 
-        let first_i = LOWER_MEMORY_BOUNDARY;
+        let first_i = LOWER_MEMORY_BOUNDARY + 4;
         chip8.i = first_i;
 
         for i in 0..5 {
@@ -1297,7 +1268,7 @@ mod tests {
         chip8.run();
 
         for i in 0..5 {
-            assert_eq!(chip8.memory[LOWER_MEMORY_BOUNDARY + i], (i + 1) as u8);
+            assert_eq!(chip8.memory[first_i + i], (i + 1) as u8);
         }
     }
 
@@ -1306,11 +1277,14 @@ mod tests {
         // 0xFX65: Fills V0 to VX (including VX) with values from memory
         // starting at address I. The offset from I is increased by 1 for
         // each value written, but I itself is left unmodified.
-        let program: Vec<u8> = vec![0xF4, 0x65];
+        let program: Vec<u8> = vec![
+            0xF4, 0x65,
+            0x0, 0x0 // exit
+        ];
 
         let mut chip8 = create_and_load(&program).unwrap();
 
-        let first_i = (LOWER_MEMORY_BOUNDARY + 2);
+        let first_i = (LOWER_MEMORY_BOUNDARY + 4);
         chip8.i = first_i;
 
         for i in 0..5 {
